@@ -1,0 +1,41 @@
+productName: OctoLauncher
+directories:
+  buildResources: build
+  output: dist
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  # Strip every project-root .md file from the asar bundle
+  - '!*.md'
+  - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,.prettierrc.cjs,dev-app-update.yml}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!{tailwind.config.ts,postcss.config.cjs}'
+  - '!{dist,dist-new,dist-test,out/main/chunks}/**'
+  - '!.launcher/**'
+  - '!WTF/**'
+  - '!server/**'
+  - '!scripts/**'
+  - '!**/node_modules/**/{__tests__,test,tests,docs,example,examples,demo,demos,benchmark,benchmarks}/**'
+  - '!**/node_modules/**/*.{tsx,map,markdown}'
+  - '!**/node_modules/**/build/Release/obj/**'
+  - '!**/node_modules/**/build/Release/{*.iobj,*.ipdb,*.recipe}'
+  - '!**/node_modules/**/*.{vcxproj,vcxproj.filters}'
+asarUnpack:
+  - resources/**
+npmRebuild: false
+electronLanguages: en
+win:
+  artifactName: ${productName}.${ext}
+  target:
+    - portable
+    - nsis
+nsis:
+  artifactName: ${productName}_Installer.${ext}
+  uninstallDisplayName: ${productName}
+  oneClick: false
+  removeDefaultUninstallWelcomePage: true
+publish:
+  - provider: generic
+    url: 'https://octowow.st/launcher-updates/'
