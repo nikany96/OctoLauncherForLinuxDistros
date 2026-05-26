@@ -158,6 +158,10 @@ export const isGameRunning = (executablePath: string): Promise<boolean> => {
 const CDN_VERSION = import.meta.env.MAIN_VITE_CLIENT_VERSION || 'latest';
 const SERVER_URL = import.meta.env.MAIN_VITE_SERVER_URL || 'https://octowow.st';
 
+const toUrlPath = (p: string) => p.split(path.sep).map(encodeURIComponent).join('/');
+const buildClientUrl = (filePath: string) =>
+	`${SERVER_URL}/client/${CDN_VERSION}/${toUrlPath(path.normalize(filePath))}`;
+
 const fetchManifest = async () => {
 	try {
 		const r = await fetch(
