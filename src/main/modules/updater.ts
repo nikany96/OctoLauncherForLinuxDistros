@@ -2,6 +2,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { exec } from 'node:child_process';
 import os from 'node:os';
+import https from 'node:https';
 
 import { app } from 'electron';
 import fetch from 'node-fetch';
@@ -38,7 +39,9 @@ import {
 } from '~common/utils';
 import { mainWindow } from '~main/index';
 import { patchExecutable } from '~main/modules/patcher';
-import { getClientVersion } from '~main/utils';
+import { getClientVersion, runWorker } from '~main/utils';
+import downloadFileWorker from '~main/workers/downloadFile?nodeWorker';
+import hashFileWorker from '~main/workers/hashFile?nodeWorker';
 
 import Preferences from './preferences';
 import Observable from './observable';
@@ -118,37 +121,47 @@ const getManifestItem = (
 	);
 };
 
-export const isGameRunning = (executablePath: string) =>
-	os.platform() === 'win32'
-		? new Promise<boolean>(resolve => {
-				const exeName = path.basename(executablePath);
-				exec(
-					`tasklist /FI "IMAGENAME eq ${exeName}" /FO CSV /NH`,
-					(error, stdout) => {
-						if (error) {
-							Logger.warn(
-								`tasklist probe for "${exeName}" failed; assuming game ` +
-									`is not running. Error: ${error.message}`
-							);
-							resolve(false);
-							return;
-						}
-						resolve(
-							stdout.toLowerCase().includes(`"${exeName.toLowerCase()}"`)
-						);
-					}
-				);
-		  })
-		: false;
+export const isGameRunning = (executablePath: string): Promise<boolean> => {
+	const exeName = path.basename(executablePath);
 
-const toUrlPath = (p: string) => p.split(path.sep).map(encodeURIComponent).join('/');
+	if (os.platform() === 'win32') {
+		return new Promise<boolean>(resolve => {
+			exec(
+				`tasklist /FI "IMAGENAME eq ${exeName}" /FO CSV /NH`,
+				(error, stdout) => {
+					if (error) {
+						Logger.warn(
+							`tasklist probe for "${exeName}" failed; assuming game ` +
+								`is not running. Error: ${error.message}`
+						);
+						resolve(false);
+						return;
+					}
+					resolve(stdout.toLowerCase().includes(`"${exeName.toLowerCase()}"`));
+				}
+			);
+		});
+	}
+
+	if (os.platform() === 'linux') {
+		return new Promise<boolean>(resolve => {
+			// Wine processes appear under the exe name in /proc or via pgrep
+			exec(`pgrep -f "${exeName}"`, (error, stdout) => {
+				resolve(!error && stdout.trim().length > 0);
+			});
+		});
+	}
+
+	return Promise.resolve(false);
+};
 
 const CDN_VERSION = import.meta.env.MAIN_VITE_CLIENT_VERSION || 'latest';
+const SERVER_URL = import.meta.env.MAIN_VITE_SERVER_URL || 'https://octowow.st';
 
 const fetchManifest = async () => {
 	try {
 		const r = await fetch(
-			`${import.meta.env.MAIN_VITE_SERVER_URL || 'https://octowow.st'}/api/file/${CDN_VERSION}/manifest.json`
+			`${SERVER_URL}/api/file/${CDN_VERSION}/manifest.json`
 		);
 		const j = await r.json();
 		await fs.writeJSON(path.join(Preferences.userDataDir, 'manifest.json'), j);
@@ -159,17 +172,12 @@ const fetchManifest = async () => {
 	}
 };
 
-const buildClientUrl = (filePath: string) =>
-	`${import.meta.env.MAIN_VITE_SERVER_URL || 'https://octowow.st'}/client/${CDN_VERSION}/${toUrlPath(
-		path.normalize(filePath)
-	)}`;
-
 export const fetchFile = async (
 	filePath: string,
 	onChunk?: (deltaBytes: number) => void
 ) => {
 	try {
-		const response = await fetch(buildClientUrl(filePath));
+		const response = await fetch(buildClientUrl(filePath), { agent: httpsAgent });
 		if (!response.ok) throw Error(`HTTP ${response.status}`);
 		if (!onChunk || !response.body) return await response.arrayBuffer();
 
@@ -188,85 +196,76 @@ export const fetchFile = async (
 	}
 };
 
+const MAX_CONCURRENT_HASHES = os.cpus().length || 4;
+let activeHashes = 0;
+const hashQueue: (() => void)[] = [];
+
+const acquireHashSlot = () =>
+	new Promise<void>(resolve => {
+		if (activeHashes < MAX_CONCURRENT_HASHES) {
+			activeHashes++;
+			resolve();
+		} else {
+			hashQueue.push(() => {
+				activeHashes++;
+				resolve();
+			});
+		}
+	});
+
+const releaseHashSlot = () => {
+	activeHashes--;
+	hashQueue.shift()?.();
+};
+
+const HASH_WORKER_THRESHOLD = 1024 * 1024; // 1 MB
+
+const MAX_CONCURRENT_DOWNLOADS = 3;
+let activeDownloads = 0;
+const downloadQueue: (() => void)[] = [];
+
+const acquireDownloadSlot = () =>
+	new Promise<void>(resolve => {
+		if (activeDownloads < MAX_CONCURRENT_DOWNLOADS) {
+			activeDownloads++;
+			resolve();
+		} else {
+			downloadQueue.push(() => {
+				activeDownloads++;
+				resolve();
+			});
+		}
+	});
+
+const releaseDownloadSlot = () => {
+	activeDownloads--;
+	downloadQueue.shift()?.();
+};
+
 export const downloadFileToDisk = async (
 	filePath: string,
 	fullPath: string,
 	expectedSize: number,
 	onChunk: (deltaBytes: number) => void
 ) => {
-	const partPath = `${fullPath}.part`;
-	await fs.ensureFile(partPath);
-	let resumeFrom = 0;
+	await acquireDownloadSlot();
 	try {
-		const stats = await fs.stat(partPath);
-		if (stats.size > 0 && stats.size < expectedSize) resumeFrom = stats.size;
-		else if (stats.size >= expectedSize) {
-			await fs.truncate(partPath, 0);
-		}
-	} catch {
-	}
-
-	if (resumeFrom > 0) onChunk(resumeFrom);
-
-	const url = buildClientUrl(filePath);
-	const headers: Record<string, string> = {};
-	if (resumeFrom > 0) headers.Range = `bytes=${resumeFrom}-`;
-
-	let response;
-	try {
-		response = await fetch(url, { headers });
-	} catch (e) {
-		Logger.error(`Network error downloading ${filePath}`, e);
-		throw Error(`Failed to download ${path.normalize(filePath)}`);
-	}
-
-	if (!response.ok && response.status !== 206) {
-		throw Error(`Failed to download ${path.normalize(filePath)}: HTTP ${response.status}`);
-	}
-
-	// If we got 200, the server gave us the whole file
-	// roll back and truncate
-	if (resumeFrom > 0 && response.status === 200) {
-		onChunk(-resumeFrom);
-		await fs.truncate(partPath, 0);
-		resumeFrom = 0;
-	}
-
-	const writeStream = fs.createWriteStream(partPath, {
-		flags: resumeFrom > 0 ? 'a' : 'w'
-	});
-
-	try {
-		await new Promise<void>((resolve, reject) => {
-			if (!response.body) {
-				reject(Error('No response body'));
-				return;
+		await runWorker<void>(
+			downloadFileWorker,
+			{
+				filePath,
+				fullPath,
+				expectedSize,
+				serverUrl: SERVER_URL,
+				cdnVersion: CDN_VERSION
+			},
+			{
+				onChunk: (delta: number) => onChunk(delta)
 			}
-			const body = response.body as NodeJS.ReadableStream;
-			body.on('data', (chunk: Buffer | Uint8Array) => {
-				const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-				if (!writeStream.write(buf)) body.pause();
-				onChunk(buf.byteLength);
-			});
-			writeStream.on('drain', () => body.resume());
-			body.on('end', () => writeStream.end(resolve));
-			body.on('error', reject);
-			writeStream.on('error', reject);
-		});
-	} catch (e) {
-		writeStream.destroy();
-		Logger.error(`Download interrupted for ${filePath}`, e);
-		throw Error(`Failed to download ${path.normalize(filePath)}`);
-	}
-
-	const finalStats = await fs.stat(partPath);
-	if (finalStats.size !== expectedSize) {
-		throw Error(
-			`Size mismatch for ${path.normalize(filePath)}: got ${finalStats.size}, expected ${expectedSize}. Will retry on next run.`
 		);
+	} finally {
+		releaseDownloadSlot();
 	}
-
-	await fs.move(partPath, fullPath, { overwrite: true });
 };
 
 type UpdaterState =
@@ -297,6 +296,7 @@ class ProgressTracker {
 	#samples: { t: number; bytesDone: number }[] = [];
 	bytesDone: number;
 	#baseline: number;
+	#lastSample = 0;
 
 	constructor(baseline = 0) {
 		this.bytesDone = baseline;
@@ -306,10 +306,13 @@ class ProgressTracker {
 	add(delta: number) {
 		this.bytesDone = Math.max(this.#baseline, this.bytesDone + delta);
 		const now = Date.now();
-		this.#samples.push({ t: now, bytesDone: this.bytesDone });
-		const cutoff = now - RATE_WINDOW_MS;
-		while (this.#samples.length > 2 && this.#samples[0].t < cutoff)
-			this.#samples.shift();
+		if (now - this.#lastSample >= 100) {
+			this.#samples.push({ t: now, bytesDone: this.bytesDone });
+			this.#lastSample = now;
+			const cutoff = now - RATE_WINDOW_MS;
+			while (this.#samples.length > 2 && this.#samples[0].t < cutoff)
+				this.#samples.shift();
+		}
 	}
 
 	bytesPerSecond() {
@@ -330,6 +333,9 @@ class ProgressTracker {
 		return (remaining / rate) * ETA_PADDING;
 	}
 }
+
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 256 });
+
 
 class UpdaterClass extends Observable<UpdaterStatus> {
 	#manifest?: FileManifest;
@@ -397,11 +403,24 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 
 		if (c?.[0] && c[1] === stats.mtimeMs) return c[0];
 
-		const newHash = crypto
-			.createHash('sha1')
-			.update(await fs.readFile(path.join(clientPath, ...filePath)))
-			.digest('hex')
-			.toLocaleUpperCase();
+		const fullPath = path.join(clientPath, ...filePath);
+		let newHash: string;
+		if (stats.size >= HASH_WORKER_THRESHOLD) {
+			await acquireHashSlot();
+			try {
+				newHash = await runWorker<string>(hashFileWorker, { fullPath });
+			} finally {
+				releaseHashSlot();
+			}
+		} else {
+			newHash = await new Promise<string>((resolve, reject) => {
+				const hash = crypto.createHash('sha1');
+				const stream = fs.createReadStream(fullPath);
+				stream.on('data', (chunk: Buffer) => hash.update(chunk));
+				stream.on('end', () => resolve(hash.digest('hex').toLocaleUpperCase()));
+				stream.on('error', reject);
+			});
+		}
 		nestedSet(this.#cache, filePath, {
 			...c,
 			[0]: newHash,
@@ -531,7 +550,7 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 
 				if (item.type === 'dir') {
 					const files = (
-						await asyncMap(item.files, f => buildTree(...filePath, f.name))
+						await Promise.all(item.files.map(f => buildTree(...filePath, f.name)))
 					).filter(isNotUndef);
 
 					return !files.length ? undefined : { ...item, files };
@@ -751,8 +770,9 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 				};
 
 				const files = await fs.readdir(clientPath);
+				const launcherBinaries = ['OctoLauncher.exe', 'OctoLauncher', 'OctoLauncher.AppImage', 'OctoLauncher.deb'];
 				for (const file of files) {
-					if (file === 'OctoLauncher.exe') continue;
+					if (launcherBinaries.includes(file)) continue;
 					await fs.rm(path.join(clientPath, file), {
 						recursive: true,
 						force: true
@@ -778,19 +798,20 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 			const tracker = new ProgressTracker(baseline);
 			let executableUpdate = false;
 			let lastEmit = 0;
-			const STATUS_EMIT_INTERVAL_MS = 250;
+			const STATUS_EMIT_INTERVAL_MS = 2000;
 
 			const emitProgress = (message: string, force = false) => {
 				const now = Date.now();
 				if (!force && now - lastEmit < STATUS_EMIT_INTERVAL_MS) return;
 				lastEmit = now;
+				const bps = tracker.bytesPerSecond();
 				this.status = {
 					state: 'updating',
 					progress: tracker.bytesDone / fullClientTotal,
 					message,
 					bytesDone: tracker.bytesDone,
 					bytesTotal: fullClientTotal,
-					bytesPerSecond: tracker.bytesPerSecond(),
+					bytesPerSecond: bps,
 					etaSeconds: tracker.etaSeconds(fullClientTotal)
 				};
 			};
@@ -873,7 +894,7 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 				}
 
 				if (item.type === 'dir') {
-					for (const i of item.files) await iterateTree(...filePath, i.name);
+					await Promise.all(item.files.map(i => iterateTree(...filePath, i.name)));
 					return;
 				}
 
@@ -934,8 +955,6 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 						emitProgress(label);
 					}
 				);
-
-				await this.#getHash({ clientPath }, ...filePath);
 			};
 
 			await iterateTree();
@@ -946,6 +965,11 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 				Preferences.data.lastPatchedLauncherVersion !== currentLauncherVersion;
 
 			if (executableUpdate || launcherVersionChanged) {
+				this.status = {
+					state: 'updating',
+					progress: 1,
+					message: 'Patching WoW.exe... please wait, might take some time'
+				};
 				await patchExecutable();
 				await this.#getHash({ clientPath }, 'WoW.exe');
 				const patchedWowHash = await this.#getHash({ clientPath }, 'WoW.exe');

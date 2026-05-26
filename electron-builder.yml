@@ -36,6 +36,12 @@ nsis:
   uninstallDisplayName: ${productName}
   oneClick: false
   removeDefaultUninstallWelcomePage: true
+linux:
+  artifactName: ${productName}.${ext}
+  category: Game
+  target:
+    - AppImage
+    - deb
 publish:
   - provider: generic
     url: 'https://octowow.st/launcher-updates/'

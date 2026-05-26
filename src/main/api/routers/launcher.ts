@@ -1,8 +1,8 @@
 import path from 'path';
 import { spawn } from 'child_process';
+import os from 'os';
 
 import fs from 'fs-extra';
-import { inject } from 'dll-inject';
 import Logger from 'electron-log/main';
 
 import Preferences from '~main/modules/preferences';
@@ -59,32 +59,42 @@ export const launcherRouter = createTRPCRouter({
 
 		if (cleanWdb) {
 			Logger.log('Cleaning up WDB...');
-			await fs.remove(path.join(clientPath, 'WDB'));
+			await fs.remove(path.join(clientDir, 'WDB'));
 		}
 
 		Logger.log('Checking Config.wtf...');
 		await patchConfig();
 
 		Logger.log('Launching WoW...');
-		const process = spawn(clientPath, { detached: !minimizeToTrayOnPlay });
+		const isLinux = os.platform() === 'linux';
+		const spawnCmd = isLinux ? 'wine' : clientPath;
+		const spawnArgs = isLinux ? [clientPath] : [];
+		const process = spawn(spawnCmd, spawnArgs, { detached: !minimizeToTrayOnPlay });
 
 		const wantChainloader = await ensureChainloaderTweak(clientDir);
 		if (wantChainloader) {
-			Logger.log('Injecting VanillaFixes...');
-			const vfPath = path.join(clientDir, 'VfPatcher.dll');
-
-			if (!(await fs.pathExists(vfPath))) {
-				Logger.warn(
-					`VfPatcher.dll missing at ${vfPath} — chainloader needed but ` +
-						'the vanillaFixes mod is not installed. Skipping inject; ' +
-						'dlls.txt entries and dependent mods will not load. Install ' +
-						"vanillaFixes from the Mods tab to fix."
-				);
+			if (isLinux) {
+				Logger.info('DLL injection skipped on Linux — VanillaFixes chainloader is Windows-only');
 			} else {
-				const status = inject('WoW.exe', vfPath);
-				if (status) {
-					Logger.error(`Injecting failed with error code ${status}...`);
-					return true;
+				Logger.log('Injecting VanillaFixes...');
+				const vfPath = path.join(clientDir, 'VfPatcher.dll');
+
+				if (!(await fs.pathExists(vfPath))) {
+					Logger.warn(
+						`VfPatcher.dll missing at ${vfPath} — chainloader needed but ` +
+							'the vanillaFixes mod is not installed. Skipping inject; ' +
+							'dlls.txt entries and dependent mods will not load. Install ' +
+							"vanillaFixes from the Mods tab to fix."
+					);
+				} else {
+					// dll-inject is Windows-only; require at runtime so Linux builds succeed
+					// eslint-disable-next-line @typescript-eslint/no-var-requires
+					const { inject } = require('dll-inject') as { inject: (proc: string, dll: string) => number };
+					const status = inject('WoW.exe', vfPath);
+					if (status) {
+						Logger.error(`Injecting failed with error code ${status}...`);
+						return true;
+					}
 				}
 			}
 		}
