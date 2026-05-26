@@ -1,4 +1,5 @@
 import { join } from 'path';
+import { spawnSync } from 'child_process';
 
 import { app, shell, BrowserWindow } from 'electron';
 import { electronApp, optimizer, is } from '@electron-toolkit/utils';
@@ -73,6 +74,14 @@ const createWindow = async () => {
 
 	mainWindow.on('ready-to-show', () => {
 		mainWindow?.show();
+		if (process.platform === 'linux') {
+			setTimeout(() => {
+				const { status } = spawnSync('pgrep', ['-x', 'i3'], { encoding: 'utf8' });
+				if (status === 0) {
+					spawnSync('i3-msg', [`[class="${app.getName()}"] floating disable`], { encoding: 'utf8' });
+				}
+			}, 300);
+		}
 	});
 	mainWindow.webContents.setWindowOpenHandler(details => {
 		shell.openExternal(details.url);
