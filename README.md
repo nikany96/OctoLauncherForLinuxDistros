@@ -13,18 +13,24 @@ Linux port of the desktop launcher for the OctoWoW (World of Warcraft 1.12.1 pri
 
 ---
 
-## Quick start (players)
-
-1. Grab `OctoLauncher.AppImage` or `OctoLauncher.deb` from the [Releases](../../releases) page.
-2. Run it and set your WoW client directory when prompted.
-3. Click **Verify** to download any missing game files, then **Play**.
-
-No server configuration needed — the launcher connects to `octowow.st` by default.
-
-### Requirements
+## Requirements
 
 - [Wine](https://www.winehq.org/) — tested with `wine-11.9`
 - A GPU with Vulkan support (see [graphics setup](#graphics-setup) below)
+
+---
+
+## How to download
+
+1. Go to the [Releases](../../releases) page and download `OctoLauncher.AppImage`.
+2. Make it executable:
+   ```bash
+   chmod +x OctoLauncher.AppImage
+   ```
+3. Run it and set your WoW client directory when prompted.
+4. Click **Verify** to download any missing game files, then **Play**.
+
+No server configuration needed — the launcher connects to `octowow.st` by default.
 
 ---
 
@@ -101,7 +107,6 @@ npm run dist
 
 Outputs to `dist/`:
 - `OctoLauncher.AppImage` — portable, runs on any distro
-- `OctoLauncher.deb` — Debian/Ubuntu installer
 
 ---
 
