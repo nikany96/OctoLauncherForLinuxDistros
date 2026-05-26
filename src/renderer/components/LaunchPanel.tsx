@@ -48,12 +48,7 @@ const ProgressDetails = ({ status }: { status: UpdaterStatus }) => {
 const LaunchPanel = () => {
 	const [status, setStatus] = useState<UpdaterStatus>({ state: 'verifying' });
 	api.updater.observe.useSubscription(undefined, {
-		onData: data => {
-			console.log({ data });
-			setStatus(data);
-		},
-		onError: err => console.log({ err }),
-		onStarted: () => console.log('Started')
+		onData: setStatus
 	});
 
 	const { data: pref } = api.preferences.get.useQuery();

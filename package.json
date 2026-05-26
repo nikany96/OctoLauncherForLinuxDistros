@@ -2,7 +2,10 @@
 	"name": "octo-launcher",
 	"version": "1.0.27",
 	"description": "An Electron application for launching and updating the OctoWoW client",
-	"author": "OctoWoW",
+	"author": {
+		"name": "OctoWoW",
+		"email": "octowow@proton.me"
+	},
 	"copyright": "Copyright © 2026 OctoWoW",
 	"main": "./out/main/index.js",
 	"scripts": {

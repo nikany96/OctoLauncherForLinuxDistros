@@ -18,7 +18,14 @@ Logger.initialize();
 Logger.errorHandler.startCatching();
 Logger.info('Launcher starting...');
 
-app.disableHardwareAcceleration();
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=128');
+app.commandLine.appendSwitch('disable-http-cache');
+app.commandLine.appendSwitch('disable-background-networking');
+app.commandLine.appendSwitch('disable-default-apps');
+app.commandLine.appendSwitch('disable-extensions');
+app.commandLine.appendSwitch('disable-sync');
+app.commandLine.appendSwitch('disable-translate');
+app.commandLine.appendSwitch('disable-spell-checking');
 
 export let mainWindow: BrowserWindow | null = null;
 
@@ -39,7 +46,7 @@ const createWindow = async () => {
 			preload: join(__dirname, '../preload/index.js'),
 			contextIsolation: true,
 			sandbox: false,
-			devTools: true
+			devTools: is.dev
 		}
 	});
 
