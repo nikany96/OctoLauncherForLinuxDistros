@@ -41,6 +41,11 @@ class SelfUpdaterClass extends Observable<SelfUpdaterStatus> {
 			return;
 		}
 
+		if (process.platform === 'linux') {
+			Logger.info('[selfUpdater] linux — no server-side update channel, skipping');
+			return;
+		}
+
 		const currentVersion = app.getVersion();
 
 		autoUpdater.logger = Logger;
