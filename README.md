@@ -236,6 +236,60 @@ The server listens on `http://localhost:5000` and serves:
 
 ---
 
+## Changes from the original Windows launcher
+
+This fork adds full Linux support. Below is a complete list of every change made to the upstream codebase.
+
+### Build system
+
+**`electron-builder.yml`** — Added Linux targets:
+- AppImage (portable, all distros)
+- `.deb` (Debian/Ubuntu)
+
+**`package.json`**:
+- `dll-inject` changed to an optional dependency — it requires a Windows toolchain and cannot compile on Linux
+- Removed missing `scrub-native-paths.cjs` from the `postinstall` script (caused install failures on Linux)
+
+### Game launch (`src/main/api/routers/launcher.ts`)
+
+- **Wine launch:** on Linux the game is started with `wine explorer /desktop=wow-N,WxH WoW.exe` instead of running `WoW.exe` directly
+- **DLL injection skipped:** `dll-inject` / VanillaFixes chainloader is Windows-only; the step is skipped entirely on Linux with a log message
+- **`cleanWdb` path fix:** the original code deleted the wrong directory on non-Windows paths
+- **Multi-instance support:** clicking Play while the game is already running launches a second instance. Each instance gets its own Wine prefix (`~/.wine-wow-1`, `~/.wine-wow-2`, …) so WoW's single-instance mutex does not block the second launch. `cleanWdb` is skipped while any instance is running to avoid deleting files mid-session
+- **Wine virtual desktop:** each instance runs inside `wine explorer /desktop=wow-N` which isolates mouse capture — without this, clicking in one game window steals focus from the other
+- **Launcher stays open:** the launcher window no longer closes or minimizes to tray when Play is clicked
+
+### Downloader performance (`src/main/modules/updater.ts`, `src/main/workers/`)
+
+The original downloader ran entirely on the Electron main-process event loop, which caused severe throughput degradation on Linux (measured: ~70 KB/s).
+
+- **Download worker thread** (`src/main/workers/downloadFile.ts`): file downloads moved off the main process. Throughput after fix: ~29 MB/s
+- **Streaming SHA1** (`#getHash`): replaced `fs.readFile` (loads entire file into memory) with `fs.createReadStream` — the original hung indefinitely on large `.mpq` files
+- **Hash worker thread** (`src/main/workers/hashFile.ts`): SHA1 of files >1 MB is offloaded to a worker thread so verification no longer blocks the event loop
+- **Parallel verification:** `buildTree` uses `Promise.all` with a semaphore (`MAX_CONCURRENT_HASHES = os.cpus().length`). Verifying 8.18 GB takes ~10 seconds
+- **Download concurrency limiter:** semaphore `MAX_CONCURRENT_DOWNLOADS = 3` prevents connection saturation
+- **`buildClientUrl` fix:** `fetchFile` called `buildClientUrl` which was not defined in `updater.ts`; added `toUrlPath` and `buildClientUrl` helpers
+
+### Config patching (`src/main/modules/patcher.ts`)
+
+- **`gxMultisample` fix:** removed `gxMultisample: 8` from the `patchConfig` defaults and added an explicit `gxMultisample: undefined` after the `...configWtf` spread. The value `8` written to `Config.wtf` caused severe frame stuttering under Wine/DXVK
+
+### Launcher process (`src/main/index.ts`)
+
+- **Hardware acceleration re-enabled:** removed `app.disableHardwareAcceleration()` — it caused the Electron UI to render via software rasterisation, burning CPU
+- **Reduced Electron RAM footprint:** added Chromium flags: `--js-flags="--max-old-space-size=128"`, `--disable-http-cache`, `--disable-background-networking`, `--disable-extensions`, `--disable-sync`, `--disable-translate`, `--disable-spell-checking`
+- **DevTools gated to dev mode:** DevTools are no longer opened in production builds
+
+### Self-updater (`src/main/modules/selfUpdater.ts`)
+
+- **Auto-update check skipped on Linux:** the server has no `latest-linux.yml` release channel, so the updater always produced an error notification on startup. A `process.platform === 'linux'` early return suppresses the check entirely
+
+### Renderer (`src/renderer/components/LaunchPanel.tsx`)
+
+- **Debug log removed:** `console.log({ data })` was firing on every state update, flooding the DevTools console
+
+---
+
 ## Architecture overview
 
 Three Vite bundles tied together by tRPC over Electron IPC:
