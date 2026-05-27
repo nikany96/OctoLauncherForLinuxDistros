@@ -101,6 +101,39 @@ Make sure `WTF/Config.wtf` does **not** contain `SET gxMultisample "8"` — this
 
 ---
 
+## Running multiple instances
+
+The launcher supports running two WoW clients simultaneously — useful for dual-boxing. Click **Play** a second time while the first game is already running and a second instance starts automatically.
+
+Each instance gets its own Wine prefix (`~/.wine-wow-1`, `~/.wine-wow-2`) so WoW's single-instance mutex does not block the second launch. Both instances share the same game directory.
+
+> **First launch of a new prefix:** Wine may show a "Wine Mono Installer" dialog. Click **Annuller / Cancel** — WoW does not need Mono.
+
+---
+
+## i3 / tiling window managers
+
+The launcher runs each WoW instance inside a Wine virtual desktop (`wine explorer /desktop=wow-N`). This isolates mouse capture between instances so clicking in one game does not steal focus from the other.
+
+The virtual desktop creates an `explorer.exe` X window. Without configuration, i3 will tile this window against whatever else is on screen, pushing the existing game out of fullscreen and revealing the i3 bar.
+
+### Fix — add floating rules to `~/.config/i3/config`
+
+```
+for_window [class="explorer.exe" title="wow-1"] floating enable, move position 0 0
+for_window [class="explorer.exe" title="wow-2"] floating enable, move position 1920 0
+```
+
+Adjust the `move position` coordinates to match your monitor layout (`xrandr` shows offsets). With a single monitor both lines can use `move position 0 0`.
+
+Reload i3 after editing:
+
+```bash
+i3-msg reload
+```
+
+---
+
 ## Building from source
 
 ### Prerequisites

@@ -1,5 +1,5 @@
 import path from 'path';
-import { spawn } from 'child_process';
+import { spawn, exec, ChildProcess } from 'child_process';
 import os from 'os';
 
 import fs from 'fs-extra';
@@ -7,13 +7,25 @@ import Logger from 'electron-log/main';
 
 import Preferences from '~main/modules/preferences';
 import Mods from '~main/modules/mods';
-import { mainWindow } from '~main/index';
-import { isGameRunning } from '~main/modules/updater';
 import { patchConfig } from '~main/modules/patcher';
-import { minimizeToTray, restoreFromTray } from '~main/modules/tray';
 import { getMod } from '~common/mods';
 
 import { createTRPCRouter, publicProcedure } from '../trpc';
+
+const runningInstances = new Map<number, ChildProcess>();
+
+function getNextSlot(): number {
+	let slot = 1;
+	while (runningInstances.has(slot)) slot++;
+	return slot;
+}
+
+const getScreenResolution = (): Promise<string> =>
+	new Promise(resolve => {
+		exec("xrandr | awk '/\\*/ {print $1; exit}'", (err, stdout) => {
+			resolve(stdout.trim() || '1920x1080');
+		});
+	});
 
 const ensureChainloaderTweak = async (clientDir: string): Promise<boolean> => {
 	if (Preferences.data.config.vanillaFixes) return true;
@@ -55,9 +67,8 @@ export const launcherRouter = createTRPCRouter({
 
 		const clientPath = path.join(clientDir, 'WoW.exe');
 		Logger.log(`Launching ${clientPath}...`);
-		if (await isGameRunning(clientPath)) return false;
 
-		if (cleanWdb) {
+		if (cleanWdb && runningInstances.size === 0) {
 			Logger.log('Cleaning up WDB...');
 			await fs.remove(path.join(clientDir, 'WDB'));
 		}
@@ -67,9 +78,21 @@ export const launcherRouter = createTRPCRouter({
 
 		Logger.log('Launching WoW...');
 		const isLinux = os.platform() === 'linux';
+		const slot = getNextSlot();
+		const winePrefix = isLinux
+			? path.join(os.homedir(), `.wine-wow-${slot}`)
+			: undefined;
 		const spawnCmd = isLinux ? 'wine' : clientPath;
-		const spawnArgs = isLinux ? [clientPath] : [];
-		const process = spawn(spawnCmd, spawnArgs, { detached: !minimizeToTrayOnPlay });
+		const resolution = isLinux ? await getScreenResolution() : '';
+		const spawnArgs = isLinux
+			? ['explorer', `/desktop=wow-${slot},${resolution}`, clientPath]
+			: [];
+		const spawnEnv = winePrefix ? { ...process.env, WINEPREFIX: winePrefix } : undefined;
+		const gameProcess = spawn(spawnCmd, spawnArgs, {
+			detached: !minimizeToTrayOnPlay,
+			env: spawnEnv,
+		});
+		runningInstances.set(slot, gameProcess);
 
 		const wantChainloader = await ensureChainloaderTweak(clientDir);
 		if (wantChainloader) {
@@ -99,15 +122,9 @@ export const launcherRouter = createTRPCRouter({
 			}
 		}
 
-		if (!minimizeToTrayOnPlay) {
-			mainWindow?.close();
-			return true;
-		}
-
-		minimizeToTray();
-		process.on('exit', () => {
-			Logger.log('WoW stopped');
-			restoreFromTray();
+		gameProcess.on('exit', () => {
+			Logger.log(`WoW instance ${slot} stopped`);
+			runningInstances.delete(slot);
 		});
 		return true;
 	})
