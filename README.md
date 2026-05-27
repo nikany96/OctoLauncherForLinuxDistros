@@ -34,10 +34,7 @@ Go to the [Releases](../../releases) page and choose the package for your distro
 3. Run it and set your WoW client directory when prompted.
 4. Click **Verify** to download any missing game files, then **Play**.
 
-> **Ubuntu 22.04+ / newer Debian:** AppImage requires `libfuse2` which is not installed by default:
-> ```bash
-> sudo apt install libfuse2
-> ```
+> **Ubuntu 22.04+ / newer Debian:** Use the `.deb` package below instead — it does not require FUSE.
 
 ### .deb (Debian / Ubuntu)
 
