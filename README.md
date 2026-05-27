@@ -52,7 +52,26 @@ No server configuration needed — the launcher connects to `octowow.st` by defa
 
 ## Graphics setup
 
-WoW 1.12.1 uses Direct3D 8. On Linux the recommended translation chain is:
+WoW 1.12.1 supports two rendering paths on Linux:
+
+| Option | Requires | Performance |
+|---|---|---|
+| **DXVK** (recommended) | Vulkan 1.2+ | Best |
+| **OpenGL** | Any GPU with OpenGL | Good enough for a 2004 game |
+
+### Option A — OpenGL (no extra files needed)
+
+Add this line to `WTF/Config.wtf`:
+
+```
+SET gxApi "OpenGL"
+```
+
+WoW uses its built-in OpenGL renderer directly — no DLL translation, no Vulkan required. Works on any GPU.
+
+### Option B — DXVK + Vulkan (recommended)
+
+Best performance. Translation chain:
 
 ```
 WoW (D3D8) → d3d8to9.dll → DXVK d3d9.dll → Vulkan
