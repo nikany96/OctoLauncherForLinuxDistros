@@ -22,13 +22,27 @@ Linux port of the desktop launcher for the OctoWoW (World of Warcraft 1.12.1 pri
 
 ## How to download
 
-1. Go to the [Releases](../../releases) page and download `OctoLauncher.AppImage`.
+Go to the [Releases](../../releases) page and choose the package for your distro.
+
+### AppImage (all distros)
+
+1. Download `OctoLauncher.AppImage`.
 2. Make it executable:
    ```bash
    chmod +x OctoLauncher.AppImage
    ```
 3. Run it and set your WoW client directory when prompted.
 4. Click **Verify** to download any missing game files, then **Play**.
+
+### .deb (Debian / Ubuntu)
+
+1. Download `OctoLauncher.deb`.
+2. Install it:
+   ```bash
+   sudo dpkg -i OctoLauncher.deb
+   ```
+3. Launch **OctoLauncher** from your application menu or run `octo-launcher`.
+4. Set your WoW client directory when prompted, then click **Verify** and **Play**.
 
 No server configuration needed — the launcher connects to `octowow.st` by default.
 
@@ -107,6 +121,12 @@ npm run dist
 
 Outputs to `dist/`:
 - `OctoLauncher.AppImage` — portable, runs on any distro
+- `OctoLauncher.deb` — for Debian/Ubuntu-based distributions
+
+> **Note (Arch Linux):** Building the `.deb` requires `libxcrypt-compat`:
+> ```bash
+> sudo pacman -S libxcrypt-compat
+> ```
 
 ---
 
