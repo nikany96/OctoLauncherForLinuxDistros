@@ -52,22 +52,52 @@ No server configuration needed — the launcher connects to `octowow.st` by defa
 
 ## Graphics setup
 
-WoW 1.12.1 uses Direct3D 8. On Linux, the recommended translation chain is:
+WoW 1.12.1 uses Direct3D 8. On Linux the recommended translation chain is:
 
 ```
 WoW (D3D8) → d3d8to9.dll → DXVK d3d9.dll → Vulkan
 ```
 
-| File | Version | Purpose |
+### Step 1 — Check your Vulkan version
+
+```bash
+vulkaninfo --summary 2>/dev/null | grep apiVersion
+```
+
+If `vulkaninfo` is not installed:
+```bash
+# Arch
+sudo pacman -S vulkan-tools
+# Debian/Ubuntu
+sudo apt install vulkan-tools
+```
+
+### Step 2 — Download the correct DXVK version
+
+| Your GPU | Vulkan support | DXVK version to use |
 |---|---|---|
-| `d3d8.dll` | d3d8to9 v1.12.0 | Translates D3D8 → D3D9 |
-| `d3d9.dll` | DXVK 1.10.3 x32 | Translates D3D9 → Vulkan |
+| GTX 900+ / RX 400+ and newer | Vulkan 1.3 | [DXVK latest (2.x)](https://github.com/doitsujin/dxvk/releases) — download `dxvk-x.x.tar.gz` |
+| GTX 600–700 (Kepler), GTX 750 | Vulkan 1.2 only | [DXVK 1.10.3](https://github.com/doitsujin/dxvk/releases/tag/v1.10.3) — download `dxvk-1.10.3.tar.gz` |
 
-Place both DLLs in your WoW client directory (same folder as `WoW.exe`).
+> DXVK 2.x requires Vulkan 1.3. Using it on a Vulkan 1.2 card will crash.
 
-> **DXVK version matters:** DXVK 2.x requires Vulkan 1.3. Cards like the GTX 770 (Kepler) only support Vulkan 1.2 — use DXVK 1.10.3 x32 instead.
+Also download **d3d8to9**: [latest release](https://github.com/crosire/d3d8to9/releases) — download `d3d8.dll`.
 
-Also make sure `WTF/Config.wtf` does **not** contain `SET gxMultisample "8"` — this causes stuttering on Wine.
+### Step 3 — Install the DLLs
+
+1. Extract `d3d8.dll` from d3d8to9 and copy it to your WoW client directory (same folder as `WoW.exe`).
+2. Extract the DXVK archive and copy `x32/d3d9.dll` to the same WoW client directory.
+
+```
+WoW client directory/
+├── WoW.exe
+├── d3d8.dll   ← d3d8to9
+└── d3d9.dll   ← DXVK x32
+```
+
+### Step 4 — Config.wtf
+
+Make sure `WTF/Config.wtf` does **not** contain `SET gxMultisample "8"` — this causes stuttering on Wine. Remove the line if present.
 
 ---
 
