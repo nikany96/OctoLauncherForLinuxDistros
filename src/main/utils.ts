@@ -12,10 +12,11 @@ const isCallbackResponse = (data: any): data is { cb: string; args: any[] } =>
 export const runWorker = <T>(
 	worker: (o: WorkerOptions) => Worker,
 	workerData: Record<string, unknown>,
-	callbacks?: Record<string, (...data: any[]) => void>
+	callbacks?: Record<string, (...data: any[]) => void>,
+	transferList?: ArrayBuffer[]
 ) =>
 	new Promise<T>((resolve, reject) =>
-		worker({ workerData })
+		worker({ workerData, transferList })
 			.on('message', m =>
 				isCallbackResponse(m) ? callbacks?.[m.cb](...m.args) : resolve(m)
 			)

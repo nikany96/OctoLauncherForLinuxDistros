@@ -90,8 +90,10 @@ export const launcherRouter = createTRPCRouter({
 		const spawnEnv = winePrefix ? { ...process.env, WINEPREFIX: winePrefix } : undefined;
 		const gameProcess = spawn(spawnCmd, spawnArgs, {
 			detached: !minimizeToTrayOnPlay,
+			stdio: 'ignore',
 			env: spawnEnv,
 		});
+		if (!minimizeToTrayOnPlay) gameProcess.unref();
 		runningInstances.set(slot, gameProcess);
 
 		const wantChainloader = await ensureChainloaderTweak(clientDir);

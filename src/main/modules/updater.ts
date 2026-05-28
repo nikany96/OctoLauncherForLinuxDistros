@@ -7,27 +7,8 @@ import https from 'node:https';
 import { app } from 'electron';
 import fetch from 'node-fetch';
 import fs from 'fs-extra';
-import {
-	SFileOpenArchive,
-	type HANDLE,
-	SFileHasFile,
-	SFileCloseArchive,
-	SFileOpenFileEx,
-	SFileReadFile,
-	SFileGetFileSize,
-	SFileCloseFile,
-	SFileCreateFile,
-	SFileWriteFile,
-	SFileFinishFile,
-	SFileFlushArchive,
-	SFileRemoveFile,
-	SFileCompactArchive
-} from 'stormlib-node';
-import {
-	MPQ_COMPRESSION,
-	MPQ_FILE,
-	STREAM_FLAG
-} from 'stormlib-node/dist/enums';
+import mpqVerifyWorker from '~main/workers/mpqVerify?nodeWorker';
+import mpqPatchWorker from '~main/workers/mpqPatch?nodeWorker';
 import Logger from 'electron-log/main';
 
 import {
@@ -354,46 +335,7 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 		await fs.writeJSON(this.#cachePath, this.#cache);
 	}
 
-	async #getHash(
-		{
-			clientPath,
-			...m
-		}: { clientPath: string } & (
-			| { hMpq: HANDLE; mpqPath: string[] }
-			| { hMpq?: never }
-		),
-		...filePath: string[]
-	) {
-		if (m.hMpq) {
-			if (!SFileHasFile(m.hMpq, path.join(...filePath))) {
-				nestedSet(this.#cache, filePath, undefined);
-				return undefined;
-			}
-			const c = nestedGet<CacheEntry>(this.#cache, [...m.mpqPath, ...filePath]);
-
-			if (c?.[0]) return c[0];
-
-			const hFile = SFileOpenFileEx(m.hMpq, path.join(...filePath), 0);
-
-			try {
-				const fileSize = Number(SFileGetFileSize(hFile).toString());
-
-				const buffer = new ArrayBuffer(fileSize);
-				if (fileSize > 0) SFileReadFile(hFile, buffer);
-
-				const newHash = crypto
-					.createHash('sha1')
-					.update(new Uint8Array(buffer))
-					.digest('hex')
-					.toLocaleUpperCase();
-
-				nestedSet(this.#cache, [...m.mpqPath, ...filePath], { [0]: newHash });
-				return newHash;
-			} finally {
-				SFileCloseFile(hFile);
-			}
-		}
-
+	async #getHash(clientPath: string, ...filePath: string[]) {
 		if (!(await fs.exists(path.join(clientPath, ...filePath)))) {
 			nestedSet(this.#cache, filePath, undefined);
 			return undefined;
@@ -499,8 +441,15 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 			const totalSize = getManifestSize(hashTree);
 			let i = 0;
 
+			let lastVerifyEmit = 0;
+			const emitVerifyStatus = (message: string) => {
+				const now = Date.now();
+				if (now - lastVerifyEmit < 150) return;
+				lastVerifyEmit = now;
+				this.status = { state: 'verifying', progress: i / totalSize, message };
+			};
+
 			const buildMpqTree = async (
-				hMpq: HANDLE,
 				mpqPath: string[],
 				...filePath: string[]
 			): Promise<FileManifest | undefined> => {
@@ -512,7 +461,7 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 				if (item.type === 'dir') {
 					const files = (
 						await asyncMap(item.files, f =>
-							buildMpqTree(hMpq, mpqPath, ...filePath, f.name)
+							buildMpqTree(mpqPath, ...filePath, f.name)
 						)
 					).filter(isNotUndef);
 					return !files.length ? undefined : { ...item, files };
@@ -526,21 +475,11 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 						)}`
 					);
 
-				this.status = {
-					state: 'verifying',
-					progress: i / totalSize,
-					message: `Verifying: [${mpqPath.at(-1)}] "${path.join(
-						...filePath
-					)}"...`
-				};
-
+				emitVerifyStatus(`Verifying: [${mpqPath.at(-1)}] "${path.join(...filePath)}"...`);
 				i += item.size;
 
-				if (
-					(await this.#getHash({ clientPath, hMpq, mpqPath }, ...filePath)) ===
-					item.hash
-				)
-					return undefined;
+				const c = nestedGet<CacheEntry>(this.#cache, [...mpqPath, ...filePath]);
+				if (c?.[0]) return c[0] === item.hash ? undefined : item;
 				return item;
 			};
 
@@ -565,11 +504,7 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 						...filePath.slice(0, -1),
 						`${filePath.at(-1)}.mpq`
 					];
-					this.status = {
-						state: 'verifying',
-						progress: i / totalSize,
-						message: `Verifying: "${path.join(...patchPath)}"...`
-					};
+					emitVerifyStatus(`Verifying: "${path.join(...patchPath)}"...`);
 
 					if (!(await fs.exists(path.join(clientPath, ...patchPath)))) {
 						i += item.size;
@@ -582,43 +517,61 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 					}
 
 					if (
-						(await this.#getHash({ clientPath }, ...patchPath)) === item.hash
+						(await this.#getHash(clientPath, ...patchPath)) === item.hash
 					) {
 						i += item.size;
 						return undefined;
 					}
 
-					try {
-						const hMpq = SFileOpenArchive(
-							path.join(clientPath, ...patchPath),
-							STREAM_FLAG.READ_ONLY
-						);
+					// Hash alle ukachedede filer i arkivet via worker (ikke-blokerende)
+					const collectLeaves = (m: FileManifest, prefix: string[] = []): string[][] => {
+						if (m.type === 'file') return [[...prefix, m.name]];
+						if (m.type === 'dir') return m.files.flatMap(f => collectLeaves(f, [...prefix, m.name]));
+						return [];
+					};
+					const uncached = collectLeaves(item).filter(leafPath => {
+						const c = nestedGet<CacheEntry>(this.#cache, [...filePath, ...leafPath]);
+						return !c?.[0];
+					});
 
+					if (uncached.length > 0) {
 						try {
-							const files = (
-								await asyncMap(item.files, f =>
-									buildMpqTree(hMpq, filePath, f.name)
-								)
-							).filter(isNotUndef);
-							return !files.length ? undefined : { ...item, files };
-						} finally {
-							SFileCloseArchive(hMpq);
+							await runWorker<void>(
+								mpqVerifyWorker,
+								{
+									archivePath: path.join(clientPath, ...patchPath),
+									fileList: uncached.map(p => path.join(...p))
+								},
+								{
+									onHash: (inMpqPath: string, hash: string | null) => {
+										const parts = inMpqPath.split(path.sep);
+										if (hash !== null) {
+											nestedSet(this.#cache, [...filePath, ...parts], { [0]: hash });
+										} else {
+											nestedSet(this.#cache, [...filePath, ...parts], undefined);
+										}
+									}
+								}
+							);
+						} catch (e) {
+							Logger.log(
+								`Failed to verify ${path.join(...patchPath)}, will be downloaded fresh`,
+								'warning',
+								e
+							);
+							return {
+								type: 'file',
+								name: `${item.name}.mpq`,
+								hash: item.hash,
+								size: item.size
+							};
 						}
-					} catch (e) {
-						Logger.log(
-							`Failed to verify ${path.join(
-								...patchPath
-							)}, will be downloaded fresh`,
-							'warning',
-							e
-						);
-						return {
-							type: 'file',
-							name: `${item.name}.mpq`,
-							hash: item.hash,
-							size: item.size
-						};
 					}
+
+					const files = (
+						await asyncMap(item.files, f => buildMpqTree(filePath, f.name))
+					).filter(isNotUndef);
+					return !files.length ? undefined : { ...item, files };
 				}
 
 				if (item.tags?.includes('vanillaFixes') && !vanillaFixes) {
@@ -632,15 +585,11 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 					}
 				}
 
-				this.status = {
-					state: 'verifying',
-					progress: i / totalSize,
-					message: `Verifying: "${path.join(...filePath)}"...`
-				};
+				emitVerifyStatus(`Verifying: "${path.join(...filePath)}"...`);
 
 				i += item.size;
 
-				const hash = await this.#getHash({ clientPath }, ...filePath);
+				const hash = await this.#getHash(clientPath, ...filePath);
 
 				if (hash === item.hash) return undefined;
 
@@ -714,10 +663,7 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 						await patchExecutable();
 						const cd = Preferences.data.clientDir;
 						if (cd) {
-							const patchedHash = await this.#getHash(
-								{ clientPath: cd },
-								'WoW.exe'
-							);
+							const patchedHash = await this.#getHash(cd, 'WoW.exe');
 							await this.#saveCache();
 							Preferences.data = {
 								lastPatchedLauncherVersion: currentLauncherVersion,
@@ -820,65 +766,6 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 				};
 			};
 
-			const iterateMpqTree = async (
-				hMpq: HANDLE,
-				mpqPath: string[],
-				...filePath: string[]
-			) => {
-				const item = getManifestItem(hashTree, [...mpqPath, ...filePath]);
-				if (!item) return undefined;
-
-				if (item.type === 'del') {
-					throw Error(
-						`TODO: Deleting of files from MPQ not implemented at path ${path.join(
-							...mpqPath,
-							...filePath
-						)}`
-					);
-				}
-
-				if (item.type === 'dir') {
-					for (const f of item.files)
-						await iterateMpqTree(hMpq, mpqPath, ...filePath, f.name);
-					return;
-				}
-
-				if (item.type === 'mpq')
-					throw Error(
-						`There can't be an mpq archive inside mpq at path ${path.join(
-							...mpqPath,
-							...filePath
-						)}`
-					);
-
-				const label = `Patching: [${mpqPath.at(-1)}] "${path.join(...filePath)}"`;
-				emitProgress(label, true);
-
-				const data = await fetchFile(
-					path.join(...mpqPath, ...filePath),
-					delta => {
-						tracker.add(delta);
-						emitProgress(label);
-					}
-				);
-
-				if (SFileHasFile(hMpq, path.join(...filePath)))
-					SFileRemoveFile(hMpq, path.join(...filePath));
-
-				const hFile = SFileCreateFile(
-					hMpq,
-					path.join(...filePath),
-					0,
-					data.byteLength,
-					0,
-					MPQ_FILE.COMPRESS
-				);
-				try {
-					SFileWriteFile(hFile, data, MPQ_COMPRESSION.ZLIB);
-				} finally {
-					SFileFinishFile(hFile);
-				}
-			};
 
 			const iterateTree = async (...filePath: string[]) => {
 				const item = getManifestItem(hashTree, filePath);
@@ -893,7 +780,7 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 
 					await fs.remove(fullPath);
 
-					await this.#getHash({ clientPath }, ...filePath);
+					await this.#getHash(clientPath, ...filePath);
 					return;
 				}
 
@@ -929,15 +816,38 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 							`Failed to update "${patchFile}" because it's read-only.`
 						);
 
-					const hMpq = SFileOpenArchive(path.join(clientPath, ...patchPath), 0);
-					try {
-						for (const f of item.files)
-							await iterateMpqTree(hMpq, filePath, f.name);
-						SFileFlushArchive(hMpq);
-						SFileCompactArchive(hMpq);
-					} finally {
-						SFileCloseArchive(hMpq);
-					}
+					// Download alle filer der skal patches, send derefter til worker
+					const mpqFileUpdates: Array<{ inMpqPath: string; data: ArrayBuffer }> = [];
+
+					const collectMpqUpdate = async (mpqPath: string[], ...fileP: string[]): Promise<void> => {
+						const innerItem = getManifestItem(hashTree, [...mpqPath, ...fileP]);
+						if (!innerItem) return;
+						if (innerItem.type === 'del')
+							throw Error(`TODO: Deleting of files from MPQ not implemented at path ${path.join(...mpqPath, ...fileP)}`);
+						if (innerItem.type === 'dir') {
+							for (const f of innerItem.files) await collectMpqUpdate(mpqPath, ...fileP, f.name);
+							return;
+						}
+						if (innerItem.type === 'mpq')
+							throw Error(`Nested MPQ at ${path.join(...mpqPath, ...fileP)}`);
+						const label = `Patching: [${mpqPath.at(-1)}] "${path.join(...fileP)}"`;
+						emitProgress(label, true);
+						const data = await fetchFile(
+							path.join(...mpqPath, ...fileP),
+							delta => { tracker.add(delta); emitProgress(label); }
+						);
+						mpqFileUpdates.push({ inMpqPath: path.join(...fileP), data });
+					};
+
+					for (const f of item.files)
+						await collectMpqUpdate(filePath, f.name);
+
+					await runWorker<void>(
+						mpqPatchWorker,
+						{ archivePath: path.join(clientPath, ...patchPath), files: mpqFileUpdates },
+						{},
+						mpqFileUpdates.map(f => f.data)
+					);
 					return;
 				}
 
@@ -975,8 +885,8 @@ class UpdaterClass extends Observable<UpdaterStatus> {
 					message: 'Patching WoW.exe... please wait, might take some time'
 				};
 				await patchExecutable();
-				await this.#getHash({ clientPath }, 'WoW.exe');
-				const patchedWowHash = await this.#getHash({ clientPath }, 'WoW.exe');
+				await this.#getHash(clientPath, 'WoW.exe');
+				const patchedWowHash = await this.#getHash(clientPath, 'WoW.exe');
 				await this.#saveCache();
 				Preferences.data = {
 					version: await getClientVersion(),
