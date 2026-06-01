@@ -1,6 +1,7 @@
 import path from 'path';
-import { spawn, exec, ChildProcess } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import os from 'os';
+import { screen } from 'electron';
 
 import fs from 'fs-extra';
 import Logger from 'electron-log/main';
@@ -20,12 +21,6 @@ function getNextSlot(): number {
 	return slot;
 }
 
-const getScreenResolution = (): Promise<string> =>
-	new Promise(resolve => {
-		exec("xrandr | awk '/\\*/ {print $1; exit}'", (err, stdout) => {
-			resolve(stdout.trim() || '1920x1080');
-		});
-	});
 
 const ensureChainloaderTweak = async (clientDir: string): Promise<boolean> => {
 	if (Preferences.data.config.vanillaFixes) return true;
@@ -83,12 +78,20 @@ export const launcherRouter = createTRPCRouter({
 			? path.join(os.homedir(), `.wine-wow-${slot}`)
 			: undefined;
 		const spawnCmd = isLinux ? 'wine' : clientPath;
-		const resolution = isLinux ? await getScreenResolution() : '';
-		const spawnArgs = isLinux
-			? ['explorer', `/desktop=wow-${slot},${resolution}`, clientPath]
-			: [];
 		const spawnEnv = winePrefix ? { ...process.env, WINEPREFIX: winePrefix } : undefined;
+
+		let spawnArgs: string[];
+		if (isLinux) {
+			const displays = screen.getAllDisplays();
+			const display = displays[slot - 1] ?? displays[0];
+			const { width, height } = display.bounds;
+			spawnArgs = ['explorer', `/desktop=wow-${slot},${width}x${height}`, 'WoW.exe'];
+		} else {
+			spawnArgs = [];
+		}
+
 		const gameProcess = spawn(spawnCmd, spawnArgs, {
+			cwd: clientDir,
 			detached: !minimizeToTrayOnPlay,
 			stdio: 'ignore',
 			env: spawnEnv,
