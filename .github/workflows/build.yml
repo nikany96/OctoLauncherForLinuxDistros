@@ -28,7 +28,7 @@ jobs:
       - name: Rebuild native modules for Electron ABI
         run: node_modules/.bin/electron-builder.cmd install-app-deps
         continue-on-error: true
-        
+
       - name: Build bundles
         run: npm run build
         env:
