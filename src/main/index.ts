@@ -29,7 +29,8 @@ app.commandLine.appendSwitch('disable-translate');
 app.commandLine.appendSwitch('disable-spell-checking');
 // GTX 770 (nvidia-470xx) does not support Vulkan 1.3 required by Dawn/WebGPU
 app.commandLine.appendSwitch('disable-features', 'Vulkan');
-app.commandLine.appendSwitch('use-gl', 'desktop');
+app.commandLine.appendSwitch('use-gl', 'angle');
+app.commandLine.appendSwitch('use-angle', 'gl');
 
 export let mainWindow: BrowserWindow | null = null;
 
