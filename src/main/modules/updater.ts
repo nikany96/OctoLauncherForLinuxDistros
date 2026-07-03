@@ -1,6 +1,6 @@
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { exec } from 'node:child_process';
+import { exec, execFile } from 'node:child_process';
 import os from 'node:os';
 import https from 'node:https';
 
@@ -126,8 +126,11 @@ export const isGameRunning = (executablePath: string): Promise<boolean> => {
 
 	if (os.platform() === 'linux') {
 		return new Promise<boolean>(resolve => {
-			// Wine processes appear under the exe name in /proc or via pgrep
-			exec(`pgrep -f "${exeName}"`, (error, stdout) => {
+			// Wine runs the game with "WoW.exe" in its argv, so `pgrep -f` finds it.
+			// Use execFile (not exec) so pgrep isn't run via `sh -c "pgrep -f ..."`,
+			// whose own command line contains the pattern and made pgrep match itself,
+			// which caused this check to always report the game as running.
+			execFile('pgrep', ['-f', exeName], (error, stdout) => {
 				resolve(!error && stdout.trim().length > 0);
 			});
 		});
